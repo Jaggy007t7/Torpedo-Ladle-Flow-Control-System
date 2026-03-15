@@ -1,0 +1,147 @@
+function solve_ode_system()
+    format long
+    % --- 1. DEFINE CONSTANTS ---
+    c = 0.6;        % Discharge coefficient
+    Lf = 20e-3;     % Lip width (m)
+    g = 9.81;       % Gravity (m/s^2)
+    L = 110e-3;     % Length (m)
+    R = 60e-3;      % Radius (m)
+    phi = 0;        % Phase offset angle
+    
+    theta_min = 0*pi/180;  % Start pouring angle
+    theta_max =160*pi/180; % Target pouring angle
+    
+    % --- 2. DEFINE OMEGA(t) ---
+    omega_func = @(t) 0.05*t; % Constant angular velocity
+    
+    % --- 3. SETUP SOLVER OPTIONS ---
+    % We pass theta_max to the event function to stop only when h ~ 0 AT theta_max
+    options = odeset('Events', @(t, y) stop_event(t, y, theta_max), 'RelTol', 1e-6);
+    
+    % --- 4. INITIAL CONDITIONS & TIME SPAN ---
+    theta0 = 0;       
+    h0 = 0;           
+    y0 = [theta0; h0]; 
+    tspan = 0:0.0001:50;  % Increased max time to allow for full drainage
+    
+    % --- 5. SOLVE COUPLED ODEs ---
+    [t_out, y_out] = ode45(@(t, y) system_dynamics(t, y, omega_func, c, Lf, g, L, R, phi, theta_min, theta_max), tspan, y0, options);
+    
+    % Extract results
+    theta_out = y_out(:, 1);
+    h_out = y_out(:, 2);
+    
+    % --- 6. CALCULATIONS ---
+    % Flow rate Q in m^3/s
+    Q_out = (2/3) * c * Lf * sqrt(2 * g * max(0, h_out).^3);
+    total_volume_m3 = trapz(t_out, Q_out);
+    
+    % Geometry terms for plotting
+    p = R .* cos(theta_out + phi);
+    Vs = L .* (p .* sqrt(max(0, R^2 - p.^2)) + R^2 .* asin(p ./ R) + (pi * R^2) / 2);
+    
+    % Anonymous function for residual volume Vr
+    Vr_func = @(p_val, h_val) 2 .* L .* (((p_val + h_val) ./ 2 .* sqrt(max(0, R^2 - (p_val + h_val).^2)) + ...
+               (R^2 / 2) .* asin((p_val + h_val) ./ R)) - ...
+               ((p_val) ./ 2 .* sqrt(max(0, R^2 - p_val.^2)) + (R^2 / 2) .* asin(p_val ./ R)));
+    
+    Vr_vals = Vr_func(p, h_out);
+    
+    % --- 7. DISPLAY RESULTS ---
+    fprintf('Simulation finished.\n');
+    fprintf('Final Angle: %.2f degrees\n', theta_out(end)*180/pi);
+    fprintf('Total Poured Volume: %.4f Liters\n', total_volume_m3 * 1000);
+    
+    % --- 8. PLOTTING ---
+    figure('Color', 'w');
+    
+    % Height vs Time
+    subplot(2,2,1)
+    hold on
+    plot(t_out, h_out,t_out,10^-4.*theta_out * 180/pi, 'b', 'LineWidth', 1.5);
+    grid on; title('Fluid Height h(t)'); xlabel('Time (s)'); ylabel('Height (m)');
+    
+    % Flow Rate vs Time
+    subplot(2,2,2)
+    plot(t_out, Q_out * 1000,t_out,10^-4.*theta_out * 180/pi, 'k', 'LineWidth', 1.5);
+    grid on; title('Flow Rate (L/s)'); xlabel('Time (s)'); ylabel('Q (L/s)');
+    
+    % Angle vs Time
+    subplot(2,2,3)
+    plot(t_out, theta_out * 180/pi, 'r', 'LineWidth', 1.5);
+    yline(theta_max * 180/pi, '--k', 'Theta Max');
+    grid on; title('Angle \theta vs Time'); xlabel('Time (s)'); ylabel('Degrees');
+    
+    % Interior Volume vs Angle
+    subplot(2,2,4)
+    plot(theta_out * 180/pi, 1000 .* (Vr_vals + Vs), 'm', 'LineWidth', 1.5);
+    grid on; title('Interior Volume vs Angle'); xlabel('Angle (deg)'); ylabel('Volume (L)');
+
+    figure;
+    plot(t_out, 1000 .* (Vr_vals + Vs), 'm', 'LineWidth', 1.5);
+    grid on; title('Interior Volume vs Time'); xlabel('Time (s)'); ylabel('Volume (L)');
+end
+
+% =========================================================================
+% LOCAL FUNCTIONS
+% =========================================================================
+
+function dydt = system_dynamics(t, y, omega_func, c, Lf, g, L, R, phi, theta_min, theta_max)
+    theta = y(1);
+    h = y(2);
+    
+    % If we have reached the max angle, stop rotating (omega = 0)
+    if theta >= theta_max
+        omega = 0;
+        current_theta = theta_max; 
+    else
+        omega = omega_func(t);
+        current_theta = theta;
+    end
+    
+    % dTheta/dt
+    dtheta_dt = omega;
+    
+    % dH/dt
+    if current_theta < theta_min
+        dh_dt = 0;
+    else
+        p = R * cos(current_theta + phi);
+        
+        % Numerator: Outflow based on Torricelli-like weir flow
+        numerator = (2/3) * c * Lf * sqrt(2 * g * max(0, h)^3);
+        
+        % Denominator: Surface area change factor
+        % max(..., 1e-9) prevents division by zero at geometric limits
+        inner_sqrt = max(0, R^2 - (p + h)^2);
+        denominator = -2 * L * sqrt(inner_sqrt + 1e-12); 
+        
+        outflow_term = numerator / denominator;
+        
+        % Kinematic term: Displacement of fluid due to rotation
+        % If omega is 0 (at theta_max), this term disappears
+        kinematic_term = R * sin(current_theta + phi) * omega;
+        
+        dh_dt = outflow_term + kinematic_term;
+    end
+    
+    dydt = [dtheta_dt; dh_dt];
+end
+
+function [value, isterminal, direction] = stop_event(t, y, theta_max)
+    theta = y(1);
+    h = y(2);
+    
+    % We only want to stop if:
+    % 1. We are at or beyond the target angle
+    % 2. The height (and thus flow rate) has dropped to zero
+    
+    if theta >= (theta_max - 1e-5)
+        value = h - 1e-5; % Trigger when h is near zero
+    else
+        value = 1; % Keep going
+    end
+    
+    isterminal = 1;  % Stop solver
+    direction = -1; % Only when h is decreasing
+end

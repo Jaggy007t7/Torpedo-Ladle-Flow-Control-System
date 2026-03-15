@@ -1,0 +1,155 @@
+
+function solve_ode_system()
+    format long
+    % --- 1. DEFINE CONSTANTS ---
+    % Replace these with your actual physical values
+
+
+
+    c = 0.9;        % Discharge coefficient
+    Lf = 20e-3;       % Lip width
+    g = 9.81;       % Gravity
+    L = 110e-3;        % Length
+    R = 60e-3;        % Radius
+    phi = 0;     % Phase offset angle
+    %omega
+    %theta
+    %time
+    theta_min = 20*pi/180; % Start pouring angle (e.g., 45 degrees)
+    theta_max = 150*pi/180; % Stop pouring angle (e.g., 90 degrees)
+
+    % --- 2. DEFINE OMEGA(t) ---
+    % You can change this to any function of t.
+    % Example: omega_func = @(t) ;
+    omega_func = @(t) 0.05 ; % Constant angular velocity for demonstration
+
+    % --- 3. SETUP SOLVER OPTIONS ---
+    % Attach the event function to stop when theta == theta_max
+    options = odeset('Events', @(t, y) stop_event(t, y, theta_max));
+
+    % --- 4. INITIAL CONDITIONS & TIME SPAN ---
+    theta0 = 0;       % Starting angle
+    h0 = 0;           % Initial height is 0 per your requirements
+    y0 = [theta0; h0]; 
+    tspan = 0:0.01:100;  % Max time window (solver will stop early due to event)
+
+    % --- 5. SOLVE COUPLED ODEs ---
+    % y_out(:,1) will be theta, y_out(:,2) will be h
+    [t_out, y_out] = ode45(@(t, y) system_dynamics(t, y, omega_func, c, Lf, g, L, R, phi, theta_min), tspan, y0, options);
+
+    % Extract results
+    theta_out = y_out(:, 1);
+    h_out = y_out(:, 2);
+    
+
+
+
+    % --- 6. PLOT h(t) ---
+    figure;
+    subplot(2,2,1)
+    plot(180/pi.*theta_out, h_out, 'b', 'LineWidth', 2);
+    grid on;
+    title('Fluid Height h(t) vs. Time');
+    xlabel('Time (s)');
+    ylabel('Height h');
+
+    % --- 6. PLOT flow rate ---
+    subplot(2,2,2)
+    plot(180/pi.*theta_out, 1000.*(2)./(3).*c.*Lf.*sqrt(2.*g.*h_out.^3), 'b', 'LineWidth', 2);
+    grid on;
+    title('Flow Rate vs. Time');
+    xlabel('Theta');
+    ylabel('Flow Rate in Litre');
+    
+    % Optional: Plot theta(t) to verify the constraints
+    subplot(2,2,3)
+    plot(t_out, theta_out, 'r', 'LineWidth', 2);
+    yline(theta_min, '--k', '\theta_{min} (Start Solving h)');
+    yline(theta_max, '--k', '\theta_{max} (Stop Simulation)');
+    grid on;
+    title('\theta(t) vs. Time');
+    xlabel('Time (s)');
+    ylabel('\theta (rad)');
+
+    % 1. Calculate the flow rate (Q) at every single time step
+% (Note the dot operators for element-wise operations on the h_out array)
+Q_out = (2/3) .* c .* Lf .* sqrt(2 .* g .* max(0, h_out).^3);
+
+% 2. Use trapz to properly integrate the flow rate over the actual time steps
+xyz_correct = trapz(t_out, Q_out);
+
+% 3. Display the results
+disp(['Correct Volume (m^3): ', num2str(xyz_correct)]);
+disp(['Correct Volume (Liters): ', num2str(xyz_correct * 1000)]);
+
+
+p = R.*cos(theta_out+phi);
+Vs = L.*(p.*sqrt(R.^2-p.^2)+R.^2.*asin((p)./(R))+(pi.*R.^2)./(2));
+Vr = @(p,h_out) 2.*L.*(((p+h_out)./(2).*sqrt(R.^2-(p+h_out).^2)+(R.^2)./(2).* ...
+     asin((p+h_out)./(R)))-((p)./(2).*sqrt(R.^2-p.^2)+(R.^2)./(2).*asin((p)./(R))));
+Vr(p,h_out);
+
+    subplot(2,2,4)
+    plot(180./pi.*theta_out, 1000.*(Vr(p,h_out)+Vs), 'r', 'LineWidth', 2);
+    grid on;
+    title('Interior Volume vs. Angle');
+    xlabel('Angle');
+    ylabel('Volume in L');
+end
+
+
+% =========================================================================
+% LOCAL FUNCTIONS
+% =========================================================================
+
+function dydt = system_dynamics(t, y, omega_func, c, Lf, g, L, R, phi, theta_min)
+    % Extract current state variables
+    theta = y(1);
+    h = y(2);
+    
+    % Get current angular velocity from your custom function
+    omega = omega_func(t);
+    
+    % ODE 1: d(theta)/dt
+    dtheta_dt = omega;
+    
+    % ODE 2: d(h)/dt
+    if theta < theta_min
+        % Hold h at 0 when theta is below the minimum threshold
+        dh_dt = 0;
+    else
+        % Update p simultaneously based on current theta
+        p = R * cos(theta + phi);
+        
+        % Safeguard the term inside the square root from numerical drift below 0
+        inner_sqrt_val = max(0, R^2 - (p + h)^2);
+        
+        % Calculate numerator and denominator of the outflow term
+        numerator = (2/3) * c * Lf * sqrt(2 * g * max(0, h)^3);
+        denominator = -2 * L * sqrt(inner_sqrt_val);
+        
+        % Prevent division by zero if geometry hits the boundary exactly
+        if denominator == 0
+            outflow_term = 0; 
+        else
+            outflow_term = numerator / denominator;
+        end
+        
+        % Calculate kinematic shift term
+        kinematic_term = R * sin(theta + phi) * omega;
+        
+        % Combine for final dh/dt
+        dh_dt = outflow_term + kinematic_term;
+    end
+    
+    % Return column vector
+    dydt = [dtheta_dt; dh_dt];
+end
+
+function [value, isterminal, direction] = stop_event(~, y, theta_max)
+    % Event triggers when value == 0
+    theta = y(1);
+    value = theta - theta_max; 
+    isterminal = 1; % 1 tells the solver to stop integrating
+    direction = 0;  % Detect all zero-crossings
+end
