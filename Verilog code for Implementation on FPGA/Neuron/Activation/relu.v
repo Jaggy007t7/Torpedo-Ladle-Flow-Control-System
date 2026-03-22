@@ -7,7 +7,7 @@ module ReLU  #(parameter dataWidth=16,weightIntWidth=4) (
 
 always @(posedge clk)
 begin
-    if($signed(x) >= 0). //If no. is positive.
+    if($signed(x) >= 0)//If no. is positive.
     begin
         if(x[2*dataWidth-1-:weightIntWidth+1]) //over flow to sign bit of integer part. Problem at the logic.
             out <= {1'b0,{(dataWidth-1){1'b1}}}; //positive saturate
